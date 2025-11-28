@@ -1,73 +1,93 @@
 const express = require('express');
-const { NhacCuaTui } = require('nhaccuatui-api-full');
+// Thử import an toàn hơn
+const NCT = require('nhaccuatui-api-full');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
-// 1. API Tìm kiếm trên Nhaccuatui
+// Hàm trợ giúp để lấy thư viện (vì cách export có thể thay đổi tùy version)
+function getNCT() {
+    if (NCT && NCT.NhacCuaTui) return NCT.NhacCuaTui;
+    return NCT;
+}
+
+// 1. API Tìm kiếm
 app.get('/api/search', async (req, res) => {
     try {
         const q = req.query.q;
         if (!q) return res.status(400).json({ msg: "Thiếu từ khóa" });
+
+        console.log(`Đang tìm kiếm: ${q}`);
         
-        // Gọi hàm search của thư viện NCT
-        const data = await NhacCuaTui.search(q);
+        // Gọi API
+        const data = await getNCT().search(q);
         
-        // NCT trả về cấu trúc: { search: { song: [...] } }
-        // Ta cần map lại cho giống cấu trúc Frontend cũ để khỏi sửa HTML nhiều
-        const nctSongs = data.search && data.search.song ? data.search.song : [];
-        
-        // Chuyển đổi dữ liệu NCT sang dạng chuẩn của Web cũ
-        const cleanSongs = nctSongs.map(s => ({
-            title: s.title,
-            artistsNames: s.artist_names, // NCT dùng key này
-            encodeId: s.key,              // NCT dùng 'key' làm ID (vd: j8r1d8...)
-            thumbnail: s.thumbnail
+        // Log dữ liệu trả về để debug (Xem trong Vercel Logs)
+        console.log("Kết quả NCT:", JSON.stringify(data));
+
+        // Kiểm tra an toàn trước khi lấy dữ liệu
+        let songs = [];
+        if (data && data.search && data.search.song) {
+            songs = data.search.song;
+        } else if (data && data.song) {
+             // Đôi khi nó trả thẳng data.song
+            songs = data.song;
+        }
+
+        if (!Array.isArray(songs)) {
+            console.log("Không tìm thấy bài hát hoặc cấu trúc lạ");
+            return res.json({ data: { songs: [] } });
+        }
+
+        // Map dữ liệu
+        const cleanSongs = songs.map(s => ({
+            title: s.title || "Không tên",
+            artistsNames: s.artist_names || "Không rõ",
+            encodeId: s.key || s.id, // NCT dùng 'key'
+            thumbnail: s.thumbnail || ""
         }));
 
         res.json({ data: { songs: cleanSongs } });
+
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error("LỖI SEARCH:", err);
+        // Trả về JSON rỗng thay vì lỗi 500 để web không bị đơ
+        res.json({ data: { songs: [], error: err.message } });
     }
 });
 
-// 2. API Lấy link Stream và Redirect (Để phát nhạc)
+// 2. API Lấy link Stream
 app.get('/api/song/stream', async (req, res) => {
     try {
-        const id = req.query.id; // Đây là Key của bài hát (vd: abcd123)
-        if (!id) return res.status(400).send("Thiếu ID");
-
-        // Lấy chi tiết bài hát
-        const data = await NhacCuaTui.getSong(id);
+        const id = req.query.id;
+        console.log(`Lấy link ID: ${id}`);
         
-        // Link nhạc NCT nằm trong data.song.stream_url
-        // Thường có chất lượng 128kbps (free)
-        const linkStream = data.song ? data.song.stream_url : null;
+        const data = await getNCT().getSong(id);
+        console.log("Chi tiết bài hát:", JSON.stringify(data));
+
+        // Kiểm tra link
+        let linkStream = null;
+        if (data && data.song && data.song.stream_url) {
+            linkStream = data.song.stream_url;
+        }
 
         if (linkStream && linkStream.startsWith("http")) {
             return res.redirect(linkStream);
         } else {
-            return res.status(404).send("Lỗi: Không lấy được link MP3 (Bài VIP hoặc Lỗi)");
+            return res.status(404).send("Không lấy được link MP3 (Có thể lỗi key hoặc bài VIP)");
         }
     } catch (err) {
-        res.status(500).send(err.message);
+        console.error("LỖI STREAM:", err);
+        res.status(500).send("Lỗi server: " + err.message);
     }
 });
 
-// 3. API lấy JSON thông tin (Cho nút Get JSON)
+// 3. API Get JSON
 app.get('/api/song', async (req, res) => {
     try {
-        const id = req.query.id;
-        const data = await NhacCuaTui.getSong(id);
-        
-        // Trả về JSON, trong đó có stream_url để ESP32 dùng nếu cần
-        res.json({
-            title: data.song.title,
-            artist: data.song.artist_names,
-            audio_url: data.song.stream_url, // Quan trọng: ESP32 cần cái này
-            lyric_url: data.song.lyric_url || ""
-        });
+        const data = await getNCT().getSong(req.query.id);
+        res.json(data);
     } catch (err) {
         res.json({ error: err.message });
     }
