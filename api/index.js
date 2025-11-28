@@ -5,7 +5,7 @@ const cors = require('cors');
 const app = express();
 app.use(cors());
 
-// 1. API Tìm kiếm (Đã thêm bộ lọc nhạc thường)
+// 1. API Tìm kiếm (BỎ BỘ LỌC VIP ĐỂ HIỆN KẾT QUẢ)
 app.get('/api/search', async (req, res) => {
     try {
         const q = req.query.q;
@@ -13,77 +13,67 @@ app.get('/api/search', async (req, res) => {
         
         const data = await ZingMp3.search(q);
         
-        if (!data.data || !data.data.items) {
+        // Kiểm tra kỹ dữ liệu trả về để tránh crash
+        if (!data || !data.data || !data.data.items) {
             return res.json({ data: { songs: [] } });
         }
 
-        // --- BỘ LỌC THÔNG MINH ---
-        // Chỉ lấy item là 'song' (bài hát) VÀ streamingStatus != 2 (2 thường là VIP)
-        const cleanSongs = data.data.items.filter(item => {
-            return item.type === 'song' && item.streamingStatus !== 2; 
-        });
+        // CHỈ LỌC lấy đúng loại là "song" (bài hát), bỏ qua video/playlist
+        // KHÔNG lọc streamingStatus nữa để đảm bảo có kết quả
+        const cleanSongs = data.data.items.filter(item => item.type === 'song');
 
-        // Trả về danh sách đã lọc sạch
         res.json({ data: { songs: cleanSongs } });
 
     } catch (err) {
+        console.error("Lỗi tìm kiếm:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 2. API Lấy link stream (Giữ nguyên)
+// 2. API Lấy link stream (Xử lý khi gặp bài VIP)
 app.get('/api/song/stream', async (req, res) => {
     try {
         const id = req.query.id;
         if (!id) return res.status(400).send("Thiếu ID");
 
+        // Lấy chi tiết bài hát
         const data = await ZingMp3.getSong(id);
         
-        // Cố gắng lấy link 128kbps
+        // Kiểm tra xem có link 128kbps không
         const link128 = data.data ? data.data['128'] : null;
 
-        if (link128) {
+        // Lưu ý: Bài VIP thường sẽ không có link 128 hoặc trả về null
+        if (link128 && typeof link128 === 'string' && link128.startsWith('http')) {
+            // Nếu có link ngon -> Redirect ngay
             return res.redirect(link128);
         } else {
-            // Nếu vẫn không có link (do bản quyền chặt quá), trả về lỗi
-            return res.status(404).send("Nhạc VIP hoặc bị chặn");
+            // Nếu không có link -> Báo lỗi 403 (Forbidden) hoặc 404
+            console.log(`Bài ${id} không có link stream (Có thể là VIP)`);
+            return res.status(404).send("VIP/Premium Song - Cannot Stream");
         }
     } catch (err) {
+        console.error("Lỗi lấy link:", err);
         res.status(500).send(err.message);
     }
 });
 
-// 3. API Lấy thông tin bài hát
+// 3. Các API phụ trợ khác (Giữ nguyên)
 app.get('/api/info-song', async (req, res) => {
     try {
-        const id = req.query.id;
-        const data = await ZingMp3.getInfo(id);
-        res.json(data);
-    } catch (err) {
-        res.json({ error: err.message });
-    }
+        res.json(await ZingMp3.getInfo(req.query.id));
+    } catch (err) { res.json({ error: err.message }); }
 });
 
-// 4. API Lấy lời bài hát
 app.get('/api/lyric', async (req, res) => {
     try {
-        const id = req.query.id;
-        const data = await ZingMp3.getLyric(id);
-        res.json(data);
-    } catch (err) {
-        res.json({ error: err.message });
-    }
+        res.json(await ZingMp3.getLyric(req.query.id));
+    } catch (err) { res.json({ error: err.message }); }
 });
 
-// 5. API Lấy JSON chi tiết
 app.get('/api/song', async (req, res) => {
     try {
-        const id = req.query.id;
-        const data = await ZingMp3.getSong(id);
-        res.json(data);
-    } catch (err) {
-        res.json({ error: err.message });
-    }
+        res.json(await ZingMp3.getSong(req.query.id));
+    } catch (err) { res.json({ error: err.message }); }
 });
 
 module.exports = app;
