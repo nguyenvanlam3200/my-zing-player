@@ -5,6 +5,7 @@ const path = require('path');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 // Serve static HTML file
 app.get('/', (req, res) => {
@@ -17,9 +18,13 @@ app.get('/api/search', async (req, res) => {
         const q = req.query.q;
         if (!q) return res.status(400).json({ msg: "Thiếu từ khóa q" });
         
+        console.log('Searching for:', q);
         const data = await ZingMp3.search(q);
+        console.log('Search result:', data);
+        
         res.json({ data: data.data });
     } catch (err) {
+        console.error('Search error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -28,18 +33,36 @@ app.get('/api/search', async (req, res) => {
 app.get('/api/song/stream', async (req, res) => {
     try {
         const id = req.query.id;
-        if (!id) return res.status(400).send("Thiếu ID");
+        console.log('Stream request for ID:', id);
+        
+        if (!id) {
+            console.error('No ID provided');
+            return res.status(400).send("Thiếu ID");
+        }
 
         const data = await ZingMp3.getSong(id);
-        const link128 = data?.data?.['128'];
+        console.log('Song data:', JSON.stringify(data, null, 2));
+        
+        // Thử nhiều quality khác nhau
+        const link = data?.data?.['128'] || 
+                     data?.data?.['320'] || 
+                     data?.data?.url ||
+                     data?.['128'] ||
+                     data?.['320'];
 
-        if (link128) {
-            return res.redirect(link128);
+        if (link) {
+            console.log('Redirecting to:', link);
+            return res.redirect(link);
         } else {
-            return res.status(404).send("Không tìm thấy link nhạc");
+            console.error('No link found in data:', data);
+            return res.status(404).json({ 
+                error: "Không tìm thấy link nhạc",
+                debug: data 
+            });
         }
     } catch (err) {
-        res.status(500).send(err.message);
+        console.error('Stream error:', err);
+        res.status(500).json({ error: err.message, stack: err.stack });
     }
 });
 
@@ -49,9 +72,21 @@ app.get('/api/info-song', async (req, res) => {
         const id = req.query.id;
         if (!id) return res.status(400).json({ msg: "Thiếu ID" });
         
-        const data = await ZingMp3.getInfoSong(id);
+        console.log('Getting info for:', id);
+        
+        // Thử cả getInfoSong và getInfo
+        let data;
+        try {
+            data = await ZingMp3.getInfoSong(id);
+        } catch (e) {
+            console.log('getInfoSong failed, trying getInfo');
+            data = await ZingMp3.getInfo(id);
+        }
+        
+        console.log('Info result:', data);
         res.json(data);
     } catch (err) {
+        console.error('Info error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -62,9 +97,13 @@ app.get('/api/lyric', async (req, res) => {
         const id = req.query.id;
         if (!id) return res.status(400).json({ msg: "Thiếu ID" });
         
+        console.log('Getting lyric for:', id);
         const data = await ZingMp3.getLyric(id);
+        console.log('Lyric result:', data);
+        
         res.json(data);
     } catch (err) {
+        console.error('Lyric error:', err);
         res.status(500).json({ error: err.message });
     }
 });
@@ -75,11 +114,34 @@ app.get('/api/song', async (req, res) => {
         const id = req.query.id;
         if (!id) return res.status(400).json({ msg: "Thiếu ID" });
         
+        console.log('Getting song links for:', id);
         const data = await ZingMp3.getSong(id);
+        console.log('Song links:', data);
+        
         res.json(data);
     } catch (err) {
+        console.error('Song error:', err);
         res.status(500).json({ error: err.message });
     }
+});
+
+// Catch all để debug
+app.use((req, res) => {
+    console.log('404 Not Found:', req.method, req.path);
+    res.status(404).json({ 
+        error: 'Route not found',
+        path: req.path,
+        method: req.method
+    });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+    console.error('Global error:', err);
+    res.status(500).json({ 
+        error: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
 });
 
 module.exports = app;
