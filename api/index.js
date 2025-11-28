@@ -1,79 +1,76 @@
 const express = require('express');
-const { ZingMp3 } = require('zingmp3-api-full');
+const { NhacCuaTui } = require('nhaccuatui-api-full');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
-// 1. API Tìm kiếm (BỎ BỘ LỌC VIP ĐỂ HIỆN KẾT QUẢ)
+// 1. API Tìm kiếm trên Nhaccuatui
 app.get('/api/search', async (req, res) => {
     try {
         const q = req.query.q;
-        if (!q) return res.status(400).json({ msg: "Thiếu từ khóa q" });
+        if (!q) return res.status(400).json({ msg: "Thiếu từ khóa" });
         
-        const data = await ZingMp3.search(q);
+        // Gọi hàm search của thư viện NCT
+        const data = await NhacCuaTui.search(q);
         
-        // Kiểm tra kỹ dữ liệu trả về để tránh crash
-        if (!data || !data.data || !data.data.items) {
-            return res.json({ data: { songs: [] } });
-        }
-
-        // CHỈ LỌC lấy đúng loại là "song" (bài hát), bỏ qua video/playlist
-        // KHÔNG lọc streamingStatus nữa để đảm bảo có kết quả
-        const cleanSongs = data.data.items.filter(item => item.type === 'song');
+        // NCT trả về cấu trúc: { search: { song: [...] } }
+        // Ta cần map lại cho giống cấu trúc Frontend cũ để khỏi sửa HTML nhiều
+        const nctSongs = data.search && data.search.song ? data.search.song : [];
+        
+        // Chuyển đổi dữ liệu NCT sang dạng chuẩn của Web cũ
+        const cleanSongs = nctSongs.map(s => ({
+            title: s.title,
+            artistsNames: s.artist_names, // NCT dùng key này
+            encodeId: s.key,              // NCT dùng 'key' làm ID (vd: j8r1d8...)
+            thumbnail: s.thumbnail
+        }));
 
         res.json({ data: { songs: cleanSongs } });
-
     } catch (err) {
-        console.error("Lỗi tìm kiếm:", err);
         res.status(500).json({ error: err.message });
     }
 });
 
-// 2. API Lấy link stream (Xử lý khi gặp bài VIP)
+// 2. API Lấy link Stream và Redirect (Để phát nhạc)
 app.get('/api/song/stream', async (req, res) => {
     try {
-        const id = req.query.id;
+        const id = req.query.id; // Đây là Key của bài hát (vd: abcd123)
         if (!id) return res.status(400).send("Thiếu ID");
 
         // Lấy chi tiết bài hát
-        const data = await ZingMp3.getSong(id);
+        const data = await NhacCuaTui.getSong(id);
         
-        // Kiểm tra xem có link 128kbps không
-        const link128 = data.data ? data.data['128'] : null;
+        // Link nhạc NCT nằm trong data.song.stream_url
+        // Thường có chất lượng 128kbps (free)
+        const linkStream = data.song ? data.song.stream_url : null;
 
-        // Lưu ý: Bài VIP thường sẽ không có link 128 hoặc trả về null
-        if (link128 && typeof link128 === 'string' && link128.startsWith('http')) {
-            // Nếu có link ngon -> Redirect ngay
-            return res.redirect(link128);
+        if (linkStream && linkStream.startsWith("http")) {
+            return res.redirect(linkStream);
         } else {
-            // Nếu không có link -> Báo lỗi 403 (Forbidden) hoặc 404
-            console.log(`Bài ${id} không có link stream (Có thể là VIP)`);
-            return res.status(404).send("VIP/Premium Song - Cannot Stream");
+            return res.status(404).send("Lỗi: Không lấy được link MP3 (Bài VIP hoặc Lỗi)");
         }
     } catch (err) {
-        console.error("Lỗi lấy link:", err);
         res.status(500).send(err.message);
     }
 });
 
-// 3. Các API phụ trợ khác (Giữ nguyên)
-app.get('/api/info-song', async (req, res) => {
-    try {
-        res.json(await ZingMp3.getInfo(req.query.id));
-    } catch (err) { res.json({ error: err.message }); }
-});
-
-app.get('/api/lyric', async (req, res) => {
-    try {
-        res.json(await ZingMp3.getLyric(req.query.id));
-    } catch (err) { res.json({ error: err.message }); }
-});
-
+// 3. API lấy JSON thông tin (Cho nút Get JSON)
 app.get('/api/song', async (req, res) => {
     try {
-        res.json(await ZingMp3.getSong(req.query.id));
-    } catch (err) { res.json({ error: err.message }); }
+        const id = req.query.id;
+        const data = await NhacCuaTui.getSong(id);
+        
+        // Trả về JSON, trong đó có stream_url để ESP32 dùng nếu cần
+        res.json({
+            title: data.song.title,
+            artist: data.song.artist_names,
+            audio_url: data.song.stream_url, // Quan trọng: ESP32 cần cái này
+            lyric_url: data.song.lyric_url || ""
+        });
+    } catch (err) {
+        res.json({ error: err.message });
+    }
 });
 
 module.exports = app;
