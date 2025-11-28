@@ -269,7 +269,7 @@
       }
     };
 
-    // Phát nhạc - Phương pháp mới với fetch link trước
+    // Phát nhạc - Dùng proxy qua server
     document.getElementById('btnPlay').onclick = async () => {
       const id = document.getElementById('songId').value.trim();
       if (!id) {
@@ -287,59 +287,58 @@
         const artistName = info?.data?.artistsNames || 'Không rõ ca sĩ';
         nowPlaying.textContent = `🎵 ${songTitle} - ${artistName}`;
         
-        // Bước 2: Lấy link stream
-        console.log('Getting stream link for:', id);
+        // Bước 2: Kiểm tra link có khả dụng không
+        console.log('Checking stream availability for:', id);
         const linkData = await call('/api/song', { id });
         console.log('Link data response:', linkData);
         
-        // Thử tìm link với nhiều cách
-        const streamLink = linkData?.data?.['128'] || 
-                          linkData?.data?.['320'] || 
-                          linkData?.data?.url ||
-                          linkData?.['128'] ||
-                          linkData?.['320'];
-        
-        if (streamLink) {
-          console.log('Stream link found:', streamLink);
-          
-          // Hiển thị player
-          playerSection.classList.remove('hidden');
-          player.src = streamLink;
-          
-          // Thử phát
-          setTimeout(() => {
-            player.play().then(() => {
-              console.log('Playing successfully');
-              setOut({ 
-                message: '✅ Đang phát nhạc...',
-                songId: id,
-                link: streamLink
-              });
-            }).catch(e => {
-              console.error('Play error:', e);
-              showError('Không thể phát nhạc: ' + e.message);
-              setOut({ 
-                error: 'Không thể phát',
-                detail: e.message,
-                link: streamLink 
-              });
-            });
-          }, 100);
-          
-          // Hiển thị link trực tiếp
-          direct128.href = streamLink;
-          direct128.textContent = '🔗 ' + streamLink;
-          direct128.classList.remove('hidden');
-          note128.classList.remove('hidden');
-          
-        } else {
-          console.error('No stream link found in:', linkData);
-          showError('Không tìm thấy link stream. Có thể bài hát là VIP hoặc đã bị xóa.');
-          setOut({ 
-            error: 'Không tìm thấy link',
-            debug: linkData 
-          });
+        // Kiểm tra lỗi geo-blocking
+        if (linkData.err && linkData.err !== 0) {
+          const errorMsg = linkData.msg || 'Không thể phát nhạc';
+          if (errorMsg.includes('quốc gia') || errorMsg.includes('geo')) {
+            showError('⚠️ Bài hát bị chặn theo vùng địa lý. Server đang proxy để vượt qua...');
+          } else {
+            showError('❌ ' + errorMsg);
+            setOut({ error: errorMsg, debug: linkData });
+            return;
+          }
         }
+        
+        // Bước 3: Dùng proxy stream qua server
+        const proxyUrl = `/api/song/stream?id=${encodeURIComponent(id)}`;
+        console.log('Using proxy URL:', proxyUrl);
+        
+        // Hiển thị player
+        playerSection.classList.remove('hidden');
+        player.src = proxyUrl;
+        
+        // Thử phát
+        setTimeout(() => {
+          player.play().then(() => {
+            console.log('Playing successfully via proxy');
+            setOut({ 
+              message: '✅ Đang phát nhạc qua proxy server...',
+              songId: id,
+              proxyUrl: proxyUrl,
+              note: 'Server đang proxy stream để bypass geo-blocking'
+            });
+          }).catch(e => {
+            console.error('Play error:', e);
+            showError('Không thể phát nhạc: ' + e.message);
+            setOut({ 
+              error: 'Không thể phát',
+              detail: e.message,
+              proxyUrl: proxyUrl 
+            });
+          });
+        }, 100);
+        
+        // Hiển thị link proxy
+        direct128.href = proxyUrl;
+        direct128.textContent = '🔗 ' + proxyUrl;
+        direct128.classList.remove('hidden');
+        note128.textContent = 'Link stream qua proxy server. Click để mở trong tab mới.';
+        note128.classList.remove('hidden');
         
       } catch (e) {
         console.error('Play error:', e);
