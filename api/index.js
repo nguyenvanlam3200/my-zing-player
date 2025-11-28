@@ -1,112 +1,147 @@
 const express = require('express');
+const { ZingMp3 } = require('zingmp3-api-full');
 const cors = require('cors');
-// Import toàn bộ thư viện để tránh lỗi destructuring
-const NCTLib = require('nhaccuatui-api-full');
+const path = require('path');
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
-// Hàm an toàn để lấy đối tượng chính
-function getNCT() {
-    // Kiểm tra xem thư viện trả về dạng { NhacCuaTui: ... } hay trả về trực tiếp
-    if (NCTLib && NCTLib.NhacCuaTui) {
-        return NCTLib.NhacCuaTui;
-    }
-    return NCTLib;
-}
+// Serve static HTML file
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, '../index.html'));
+});
 
-// 1. API Tìm kiếm (Bọc Try-Catch kỹ càng)
+// 1. API Tìm kiếm
 app.get('/api/search', async (req, res) => {
     try {
         const q = req.query.q;
-        if (!q) return res.status(400).json({ msg: "Thiếu từ khóa" });
-
-        console.log(`[SEARCH] Đang tìm: ${q}`);
+        if (!q) return res.status(400).json({ msg: "Thiếu từ khóa q" });
         
-        // Gọi search
-        const nct = getNCT();
-        const data = await nct.search(q);
+        console.log('Searching for:', q);
+        const data = await ZingMp3.search(q);
+        console.log('Search result:', data);
         
-        console.log("[SEARCH] Kết quả Raw:", JSON.stringify(data));
-
-        // Kiểm tra dữ liệu an toàn để không bị sập (Crash)
-        let songs = [];
-        
-        // Trường hợp 1: Cấu trúc chuẩn { search: { song: [...] } }
-        if (data && data.search && data.search.song) {
-            songs = data.search.song;
-        } 
-        // Trường hợp 2: Trả về mảng trực tiếp (đề phòng)
-        else if (data && data.song) {
-            songs = data.song;
-        }
-
-        // Map dữ liệu sang định dạng web cần
-        const cleanSongs = songs.map(s => ({
-            title: s.title || "Chưa rõ tên",
-            artistsNames: s.artist_names || "Nhiều ca sĩ",
-            encodeId: s.key || s.id, // NCT dùng Key làm ID
-            thumbnail: s.thumbnail || ""
-        }));
-
-        // Trả về kết quả (Luôn trả về JSON hợp lệ dù rỗng)
-        res.json({ data: { songs: cleanSongs } });
-
+        res.json({ data: data.data });
     } catch (err) {
-        console.error("[LOI SEARCH]", err);
-        // QUAN TRỌNG: Trả về mảng rỗng thay vì lỗi 500 để Web không báo đỏ
-        res.json({ 
-            data: { songs: [] }, 
-            debug_error: err.message 
-        });
+        console.error('Search error:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
-// 2. API Lấy link Stream
+// 2. API Stream nhạc với redirect
 app.get('/api/song/stream', async (req, res) => {
     try {
         const id = req.query.id;
-        console.log(`[STREAM] Lấy link bài: ${id}`);
+        console.log('Stream request for ID:', id);
         
-        const nct = getNCT();
-        const data = await nct.getSong(id);
+        if (!id) {
+            console.error('No ID provided');
+            return res.status(400).send("Thiếu ID");
+        }
+
+        const data = await ZingMp3.getSong(id);
+        console.log('Song data:', JSON.stringify(data, null, 2));
         
-        // Log để kiểm tra xem có link không
-        console.log("[STREAM] Data:", JSON.stringify(data));
+        // Thử nhiều quality khác nhau
+        const link = data?.data?.['128'] || 
+                     data?.data?.['320'] || 
+                     data?.data?.url ||
+                     data?.['128'] ||
+                     data?.['320'];
 
-        const link = data.song ? data.song.stream_url : null;
-
-        if (link && link.startsWith("http")) {
+        if (link) {
+            console.log('Redirecting to:', link);
             return res.redirect(link);
         } else {
-            return res.status(404).send("Lỗi: Không tìm thấy link MP3 (Bài VIP?)");
+            console.error('No link found in data:', data);
+            return res.status(404).json({ 
+                error: "Không tìm thấy link nhạc",
+                debug: data 
+            });
         }
     } catch (err) {
-        console.error("[LOI STREAM]", err);
-        res.status(500).send("Lỗi Server: " + err.message);
+        console.error('Stream error:', err);
+        res.status(500).json({ error: err.message, stack: err.stack });
     }
 });
 
-// 3. API Get JSON chi tiết
-app.get('/api/song', async (req, res) => {
+// 3. API Thông tin bài hát
+app.get('/api/info-song', async (req, res) => {
     try {
-        const nct = getNCT();
-        const data = await nct.getSong(req.query.id);
+        const id = req.query.id;
+        if (!id) return res.status(400).json({ msg: "Thiếu ID" });
         
-        // Trả về cấu trúc mà ESP32 cần
-        if (data.song) {
-            res.json({
-                title: data.song.title,
-                artist: data.song.artist_names,
-                audio_url: data.song.stream_url, // Link MP3
-                lyric_url: data.song.lyric_url
-            });
-        } else {
-            res.status(404).json({ error: "Song not found" });
+        console.log('Getting info for:', id);
+        
+        // Thử cả getInfoSong và getInfo
+        let data;
+        try {
+            data = await ZingMp3.getInfoSong(id);
+        } catch (e) {
+            console.log('getInfoSong failed, trying getInfo');
+            data = await ZingMp3.getInfo(id);
         }
+        
+        console.log('Info result:', data);
+        res.json(data);
     } catch (err) {
+        console.error('Info error:', err);
         res.status(500).json({ error: err.message });
     }
+});
+
+// 4. API Lời bài hát
+app.get('/api/lyric', async (req, res) => {
+    try {
+        const id = req.query.id;
+        if (!id) return res.status(400).json({ msg: "Thiếu ID" });
+        
+        console.log('Getting lyric for:', id);
+        const data = await ZingMp3.getLyric(id);
+        console.log('Lyric result:', data);
+        
+        res.json(data);
+    } catch (err) {
+        console.error('Lyric error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// 5. API Link stream JSON
+app.get('/api/song', async (req, res) => {
+    try {
+        const id = req.query.id;
+        if (!id) return res.status(400).json({ msg: "Thiếu ID" });
+        
+        console.log('Getting song links for:', id);
+        const data = await ZingMp3.getSong(id);
+        console.log('Song links:', data);
+        
+        res.json(data);
+    } catch (err) {
+        console.error('Song error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Catch all để debug
+app.use((req, res) => {
+    console.log('404 Not Found:', req.method, req.path);
+    res.status(404).json({ 
+        error: 'Route not found',
+        path: req.path,
+        method: req.method
+    });
+});
+
+// Error handler
+app.use((err, req, res, next) => {
+    console.error('Global error:', err);
+    res.status(500).json({ 
+        error: err.message,
+        stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
 });
 
 module.exports = app;
