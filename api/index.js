@@ -12,6 +12,20 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, '../index.html'));
 });
 
+// Helper function to set Vietnam headers
+async function fetchWithVNHeaders(url) {
+    const fetch = (await import('node-fetch')).default;
+    return fetch(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://zingmp3.vn/',
+            'Origin': 'https://zingmp3.vn',
+            'Accept': '*/*',
+            'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
+        }
+    });
+}
+
 // 1. API Tìm kiếm
 app.get('/api/search', async (req, res) => {
     try {
@@ -29,30 +43,64 @@ app.get('/api/search', async (req, res) => {
     }
 });
 
-// 2. API Stream nhạc với redirect
+// 2. API Stream nhạc - Proxy qua server để bypass geo-blocking
 app.get('/api/song/stream', async (req, res) => {
     try {
         const id = req.query.id;
         console.log('Stream request for ID:', id);
         
         if (!id) {
-            console.error('No ID provided');
             return res.status(400).send("Thiếu ID");
         }
 
         const data = await ZingMp3.getSong(id);
         console.log('Song data:', JSON.stringify(data, null, 2));
         
+        // Kiểm tra error từ API
+        if (data.err !== 0) {
+            console.error('API Error:', data.msg);
+            return res.status(403).json({ 
+                error: data.msg || "Không thể lấy link nhạc",
+                code: data.err
+            });
+        }
+        
         // Thử nhiều quality khác nhau
         const link = data?.data?.['128'] || 
                      data?.data?.['320'] || 
-                     data?.data?.url ||
-                     data?.['128'] ||
-                     data?.['320'];
+                     data?.data?.url;
 
         if (link) {
-            console.log('Redirecting to:', link);
-            return res.redirect(link);
+            console.log('Streaming from:', link);
+            
+            // Proxy stream qua server để bypass geo-blocking
+            try {
+                const fetch = (await import('node-fetch')).default;
+                const response = await fetch(link, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Referer': 'https://zingmp3.vn/',
+                        'Origin': 'https://zingmp3.vn',
+                    }
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                // Copy headers
+                res.set('Content-Type', response.headers.get('content-type') || 'audio/mpeg');
+                res.set('Accept-Ranges', 'bytes');
+                
+                // Stream audio
+                response.body.pipe(res);
+                
+            } catch (streamErr) {
+                console.error('Stream error:', streamErr);
+                // Fallback: redirect trực tiếp
+                return res.redirect(link);
+            }
+            
         } else {
             console.error('No link found in data:', data);
             return res.status(404).json({ 
